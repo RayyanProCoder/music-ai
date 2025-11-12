@@ -59,61 +59,78 @@ def find_and_play_song():
                 st.warning(f"Sorry, I couldn't find any music related to {name} on YouTube.")
                 return
 
-            video = next((v for v in all_videos if v['id']['videoId'] not in st.session_state.played_video_ids), None)
+            # Filter out already played videos
+            videos_to_try = [v for v in all_videos if v['id']['videoId'] not in st.session_state.played_video_ids]
 
-            if not video:
+            if not videos_to_try:
                 st.info(f"Looks like you've heard all the top results I could find for {name}!")
                 return
 
-            video_id = video['id']['videoId']
-            video_title = video['snippet']['title']
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
-            thumbnail_url = video['snippet']['thumbnails']['high']['url']
+            song_downloaded = False
+            for video in videos_to_try:
+                video_id = video['id']['videoId']
+                video_title = video['snippet']['title']
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                thumbnail_url = video['snippet']['thumbnails']['high']['url']
 
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.image(thumbnail_url, use_container_width=True)
-            with col2:
-                st.write(f"**🎵 Now Playing:**")
-                st.write(f"*{video_title}*")
-
-            cache_dir = "audio_cache"
-            os.makedirs(cache_dir, exist_ok=True)
-            cached_song_path = os.path.join(cache_dir, f"{video_id}.mp3")
-
-            if os.path.exists(cached_song_path):
-                st.session_state.current_song_file = cached_song_path
+                # Add to played list immediately to avoid retrying it
                 st.session_state.played_video_ids.append(video_id)
-            else:
-                progress_bar = st.progress(0, text="Starting download...")
 
-                def progress_hook(d):
-                    if d['status'] == 'downloading':
-                        total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
-                        if total_bytes:
-                            progress = d['downloaded_bytes'] / total_bytes
-                            progress_bar.progress(progress, text=f"Downloading... {int(progress * 100)}%")
-                    elif d['status'] == 'finished':
-                        progress_bar.progress(1.0, text="Download complete, preparing audio...")
+                cache_dir = "audio_cache"
+                os.makedirs(cache_dir, exist_ok=True)
+                cached_song_path = os.path.join(cache_dir, f"{video_id}.mp3")
 
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'outtmpl': cached_song_path.replace('.mp3', '.%(ext)s'),
-                    'quiet': True,
-                    'progress_hooks': [progress_hook]
-                }
+                if os.path.exists(cached_song_path):
+                    st.session_state.current_song_file = cached_song_path
+                    song_downloaded = True
+                else:
+                    try:
+                        progress_bar = st.progress(0, text=f"Trying: {video_title[:30]}...")
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([video_url])
+                        def progress_hook(d):
+                            if d['status'] == 'downloading':
+                                total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+                                if total_bytes:
+                                    progress = d['downloaded_bytes'] / total_bytes
+                                    progress_bar.progress(progress, text=f"Downloading... {int(progress * 100)}%")
+                            elif d['status'] == 'finished':
+                                progress_bar.progress(1.0, text="Download complete, preparing audio...")
 
-                st.session_state.current_song_file = cached_song_path
-                st.session_state.played_video_ids.append(video_id)
-                progress_bar.empty()
+                        ydl_opts = {
+                            'format': 'bestaudio/best',
+                            'postprocessors': [{
+                                'key': 'FFmpegExtractAudio',
+                                'preferredcodec': 'mp3',
+                                'preferredquality': '192',
+                            }],
+                            'outtmpl': cached_song_path.replace('.mp3', '.%(ext)s'),
+                            'quiet': True,
+                            'progress_hooks': [progress_hook]
+                        }
+
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([video_url])
+
+                        st.session_state.current_song_file = cached_song_path
+                        song_downloaded = True
+                        progress_bar.empty()
+                    except yt_dlp.utils.DownloadError as e:
+                        st.write(f"Skipping unavailable video: *{video_title}*")
+                        if 'progress_bar' in locals():
+                            progress_bar.empty()
+                        continue # Try the next video
+
+                if song_downloaded:
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.image(thumbnail_url, use_container_width=True)
+                    with col2:
+                        st.write(f"**🎵 Now Playing:**")
+                        st.write(f"*{video_title}*")
+                    break # Exit the loop on success
+
+            if not song_downloaded:
+                st.warning(f"Sorry, I tried several top results for {name} but couldn't find a playable video.")
 
     except Exception as e:
         st.error(f"An error occurred while trying to play the song: {e}")
